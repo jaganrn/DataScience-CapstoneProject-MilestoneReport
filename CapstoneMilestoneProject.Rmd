@@ -1,0 +1,172 @@
+---
+title: "Data Science Capstone Project - Milestone Report"
+author: "Jagannatha Reddy"
+date: "02/12/2016"
+output: html_document
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, scipen=999)
+```
+
+### **Synopsis**
+
+The objective of this project is to come up with a mechanism to suggest the next word based on the input already typed by the user. It will be built as a shiny application so that users can play and evaluate how it works. There are several applications that require this kind of utility. This mechanism allows getting to the required sentence by hitting much less keyword strokes. It is very useful to have such utility on the mobile devices where typing is difficult. This technique is also used by all the search engines to suggest the next keyword and the feature is known as *Search Suggest*. This project is done as part of Data Science specialization conducted by John Hopkins University in collaboration with <a href="https://swiftkey.com/en">Swiftkey</a>.
+
+This is the first step in the project and the goal is to perform exploratory analysis of the data. The data is from a corpus called <a href="http://www.corpora.heliohost.org">HC Corpora</a>. See the readme file at <a href="http://www.corpora.heliohost.org/aboutcorpus.html">http://www.corpora.heliohost.org/aboutcorpus.html - currently link not available</a> for details on the corpora available. Though we have the data for four locales en_US, de_DE, ru_RU and fi_FI we will do the exploratory analysis only on the **en_US** locale.
+
+### **Data Downloading & Summarization**
+
+The Capstone data is downloaded from <a href="https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip">this location</a>. We will do the exploratory analysis only on the **en_US** locale. Exploratory analysis is done using the well supported R packages <a href="http://tm.r-forge.r-project.org">tm</a>, <a href="https://cran.r-project.org/web/packages/wordcloud/index.html">wordcloud</a>, and <a href="https://cran.r-project.org/web/packages/ggplot2/index.html">ggplot2</a>.
+
+We observe that for en_US locale we have totally 3 files available. I have used UNIX command **file** to understand that all the files contain UTF-8 Unicode English text. The following is the summary of these files
+
+```{r warning=FALSE, message=FALSE, echo=TRUE, scipen=999}
+cache = TRUE
+workDir <- "/Users/jagan/work/DataScience/DataScienceCapstone/DataScience-CapstoneProject-MilestoneReport"
+setwd(workDir)
+destFile <- "Coursera-SwiftKey.zip"
+if (!file.exists(destFile)) {
+    fileUrl <- "http://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+    download.file(fileUrl, destfile = destFile)
+}
+blogsFile <- "./final/en_US/en_US.blogs.txt"
+newsFile <- "./final/en_US/en_US.news.txt"
+twitterFile <- "./final/en_US/en_US.twitter.txt"
+#unzip only if any of the input files not present
+if(!file.exists(blogsFile) || !file.exists(newsFile) || !file.exists(twitterFile)) {
+    unzip(destFile)
+}
+
+#compute filesize in KB
+oneMBToKB <- 1024*1024
+blogsFileSize   <- ceiling(file.info(blogsFile)$size/oneMBToKB)
+newsFileSize    <- ceiling(file.info(newsFile)$size/oneMBToKB)
+twitterFileSize <- ceiling(file.info(twitterFile)$size/oneMBToKB)
+
+#read the files
+blogs <- readLines(blogsFile, encoding="UTF-8")
+news  <- readLines(newsFile, encoding="UTF-8")
+twitter <- readLines(twitterFile, encoding="UTF-8")
+
+#compute the line count
+blogsLineCount   <- length(blogs)
+newsLineCount    <- length(news)
+twitterLineCount <- length(twitter)
+
+#compute the word count
+blogsWordCount   <- sum(sapply(gregexpr("\\S+", blogs), length))
+newsWordCount    <- sum(sapply(gregexpr("\\S+", news), length))
+twitterWordCount <- sum(sapply(gregexpr("\\S+", twitter), length))
+
+library(knitr)
+filestats <- data.frame(File.Name=c(blogsFile, newsFile, twitterFile),
+                        Line.Count=c(blogsLineCount, newsLineCount, twitterLineCount),
+                        Word.Count=c(blogsWordCount, newsWordCount, twitterWordCount),
+                        Size.In.MegaBytes=c(blogsFileSize, newsFileSize, twitterFileSize))
+kable(filestats, format = "markdown")
+
+trainingSetLines <- 20000
+```
+
+#### **Prepare Training Dataset**
+
+As you can see the amount of data is very huge in these files and hence building models would take very long time and also we might require powerful machines. For this reason we would only take randomly selected sample data to come up with predictive models. In this section we select `r trainingSetLines` lines from each of these files for the training set.
+
+```{r warning=FALSE, message=FALSE, echo=TRUE, scipen=999}
+trainingBlogs   <- blogs[sample(1:blogsLineCount, trainingSetLines)]
+trainingNews    <- news[sample(1:newsLineCount, trainingSetLines)]
+trainingTwitter <- twitter[sample(1:twitterLineCount, trainingSetLines)]
+
+dir.create("data", showWarnings = FALSE) #ignore Warning to recreate the directory
+trainingDataFile <- "data/en_US-Training.txt"
+fHandle <- file(trainingDataFile, "wt")
+writeLines(trainingBlogs, con=fHandle)
+writeLines(trainingNews, con=fHandle)
+writeLines(trainingTwitter, con=fHandle)
+close(fHandle)
+
+writeLines(trainingBlogs, "data/en_US-TrainingBlogs.txt")
+writeLines(trainingNews, "data/en_US-TrainingNews.txt")
+writeLines(trainingTwitter, "data/en_US-TrainingTwitter.txt")
+
+trainingDataFileSize  <- ceiling(file.info(trainingDataFile)$size/oneMBToKB)
+trainingData          <- readLines(trainingDataFile, encoding="UTF-8")
+trainingDataLineCount <- length(trainingData)
+trainingDataWordCount <- sum(sapply(gregexpr("\\S+", trainingData), length))
+trainingDataFileSize
+trainingDataLineCount
+trainingDataWordCount
+unlink(trainingDataFile) #remove the aggregate file as we have derived stats
+```
+
+As you can see the training data size has drastically reduced with filesize of `r trainingDataFileSize` MB, having `r trainingDataLineCount` lines and `r trainingDataWordCount` words. 
+
+#### **Prepare Corpus and perform basic cleanup**
+
+In the following section we create the corpus using the training data created in the earlier step and perform basic cleanup (a.k.a normalization) of the content. 
+
+```{r warning=FALSE, message=FALSE, echo=TRUE, scipen=999}
+library(tm)
+
+trainingCorpus <- Corpus(DirSource(paste(workDir, "/data", sep=""))) #create the corpus from sample data
+trainingCorpus <- tm_map(trainingCorpus, content_transformer(tolower)) #convert to lowercase
+trainingCorpus <- tm_map(trainingCorpus, removePunctuation) #remove punctuations
+trainingCorpus <- tm_map(trainingCorpus, removeWords, stopwords("english")) #remove standard stopwords
+trainingCorpus <- tm_map(trainingCorpus, stripWhitespace) #eliminate extra whitespaces
+
+dtm<-DocumentTermMatrix(trainingCorpus) #create document to term frequency matrix
+freq <- colSums(as.matrix(dtm)) #generate the word frequency from document term matrix
+
+length(freq)
+```
+Now let us inspect the most occuring words
+
+```{r warning=FALSE, message=FALSE, echo=TRUE, scipen=999}
+ord <- order(freq, decreasing=TRUE) #create sort order (descending)
+
+freq[head(ord, 10)] #display most frequently occurring words
+frequencyCapForHist <- freq[ord[30]] #we have place to display only 30 words in histogram
+frequencyCapForWordCloud <- freq[ord[100]] #we have place to display only 50 words in wordcloud
+```
+
+Total number of unique terms in the training corpora after performing basic cleaning like lowercasing, removing punctuations, removing stop words, and stripping extra whitespaces is `r format(length(freq), scientific=F)`. Here is the summary of the cleaned up data:
+
+1. Total word count: `r format(sum(freq), scientific=F)`
+1. Number of unique words: `r length(freq)`
+1. Occurance count from top 1000 words: `r format(sum(freq[ord[1:1000]]), scientific=F)`
+1. Top 1000 words represent `r round(sum(freq[ord[1:1000]])/sum(freq)*100, 2)`% of all word count
+
+#### **Word histogram**
+
+Let us plot the word histogram. As number of words are very high I am considering only the words which have a frequency of `r frequencyCapForHist` or more.
+
+```{r warning=FALSE, message=FALSE, echo=TRUE, scipen=999}
+library(ggplot2)
+wordfreqdf=data.frame(Word=names(freq), Frequency=freq)
+p <- ggplot(subset(wordfreqdf, Frequency>=frequencyCapForHist), aes(Word, Frequency))
+p <- p + geom_bar(stat="identity")
+p <- p + theme(axis.text.x=element_text(angle=45, hjust=1))
+p
+```
+
+#### **Word Cloud**
+
+Let us plot the word cloud which is a graphical representation of word frequency. As number of words are very high I am considering 100 most occurring words which correspond to occurance count of `r frequencyCapForWordCloud` or more. Here bigger the size of the word its occurance count is higher
+
+```{r warning=FALSE, message=FALSE, echo=TRUE, scipen=999}
+library(wordcloud)
+wordcloud(names(freq), freq, min.freq=frequencyCapForWordCloud, colors=brewer.pal(6, "Accent"))
+```
+
+### **Summary**
+
+1. As the data volume in the input files is very huge, I have considered randomly selected `r format(trainingSetLines, scientific=F)` lines from each of the files. This sample data might not cover all possible scenarios and hence during the final test if I know the application is not performing to the expectation I might increase the size and also the size can be different for different data sources. However it will have an impact on the performance and hence the right training data to be considered after testing the application
+1. Though **tm** package provides several mechanisms to clean and transform the text, I haven't considered all possible transformers. Also the order of applying the transformations should be revised once the application is tuned
+1. Only basic filters are applied here. However more filters might have to be applied depending on the application performance. If further cleaning can be done without impacting the expected behavior of the application then I would apply additional cleaners and possibly build new sets of cleaners specific to this application
+1. As a next step I will generate the n-gram data for this corpus and proceed with further analysis
+
+### **References**
+
+1. <a href="http://cran.r-project.org/web/packages/tm/vignettes/tm.pdf">Introduction to the tm Package: Text Mining in R</a>
+1. <a href="https://eight2late.wordpress.com/2015/05/27/a-gentle-introduction-to-text-mining-using-r/">A gentle introduction to text mining using R</a>
