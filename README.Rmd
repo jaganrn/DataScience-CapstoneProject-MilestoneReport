@@ -1,0 +1,3 @@
+### **Data Science Capstone Project - Milestone Report**
+
+If you want to run this script then simply download the file and change the working directory to the place where the <a href="https://github.com/jaganrn/DataScience-CapstoneProject-MilestoneReport/blob/master/CapstoneMilestoneProject.Rmd">CapstoneMilestoneProject.Rmd</a> file is downloaded.
